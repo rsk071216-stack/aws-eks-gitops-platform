@@ -69,7 +69,7 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/smoke-test.sh podinfo-qa | tee smoke.txt
-          cat smoke.txt >> "${GITHUB_OUTPUT}"
+          grep -E "^(version|digest)=" smoke.txt >> "${GITHUB_OUTPUT}"
 
       - name: Debug dump
         if: failure()

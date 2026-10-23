@@ -14,7 +14,7 @@ LOCAL_PORT="${LOCAL_PORT:-19898}"
 log() { printf '[smoke] %s\n' "$*" >&2; }
 
 log "waiting for deployment/podinfo in ${NAMESPACE}"
-kubectl -n "${NAMESPACE}" rollout status deployment/podinfo --timeout=300s
+kubectl -n "${NAMESPACE}" rollout status deployment/podinfo --timeout=300s >&2
 
 kubectl -n "${NAMESPACE}" port-forward svc/podinfo "${LOCAL_PORT}:9898" >/dev/null 2>&1 &
 PF_PID=$!
