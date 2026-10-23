@@ -1,0 +1,233 @@
+name: CI
+
+# Runs on every push and pull request WITHOUT any AWS credentials:
+# static checks for Terraform and Kubernetes manifests, then a full GitOps
+# end-to-end test on a throwaway kind cluster.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    # bash -eo pipefail: a failing command inside a pipe fails the step.
+    shell: bash
+
+env:
+  TERRAFORM_VERSION: "1.16.5"
+  TFLINT_VERSION: "v0.64.0"
+  KUBECTL_VERSION: "v1.35.8"
+  KUBECONFORM_VERSION: "v0.8.0"
+  HELM_VERSION: "v4.3.0"
+  KIND_VERSION: "v0.33.0"
+  KIND_NODE_IMAGE: "kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0"
+  ARGOCD_CHART_VERSION: "10.9.5" # Argo CD v3.5.3
+  # Pinned commit of the community CRD schema catalog (Argo CD CRDs for kubeconform).
+  CRDS_CATALOG_REF: "501527ab9c40c827144c8f45945b25a023e344ce"
+
+jobs:
+  terraform:
+    name: Terraform fmt / validate / tflint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff terraform
+
+      - name: terraform init + validate
+        run: |
+          set -euo pipefail
+          for dir in terraform terraform/bootstrap; do
+            echo "::group::${dir}"
+            terraform -chdir="${dir}" init -backend=false -input=false -lockfile=readonly
+            terraform -chdir="${dir}" validate
+            echo "::endgroup::"
+          done
+
+      - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
+        with:
+          tflint_version: ${{ env.TFLINT_VERSION }}
+
+      - name: tflint
+        env:
+          # Avoids GitHub API rate limits when tflint downloads the AWS ruleset.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tflint --init --config "${GITHUB_WORKSPACE}/.tflint.hcl"
+          tflint --recursive --config "${GITHUB_WORKSPACE}/.tflint.hcl" --format compact
+
+  checkov:
+    name: Checkov (IaC security scan)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Checkov
+        uses: bridgecrewio/checkov-action@7b1bd992e2c40a3404e3511944aeb8d014703d9a # v12.3129.0
+        with:
+          directory: .
+          framework: terraform,kubernetes,github_actions
+          # Reported, never blocking: findings are reviewed, not ignored blindly.
+          soft_fail: true
+          output_format: cli
+          quiet: true
+
+  manifests:
+    name: Kustomize render + kubeconform
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install kubectl and kubeconform
+        run: |
+          set -euo pipefail
+          mkdir -p "${HOME}/bin"
+          curl -fsSLo "${HOME}/bin/kubectl" "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          chmod +x "${HOME}/bin/kubectl"
+          curl -fsSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C "${HOME}/bin" kubeconform
+          echo "${HOME}/bin" >> "${GITHUB_PATH}"
+
+      - name: Render overlays
+        run: |
+          set -euo pipefail
+          mkdir -p rendered
+          for overlay in apps/podinfo/overlays/*/; do
+            env_name="$(basename "${overlay}")"
+            kubectl kustomize "${overlay}" > "rendered/podinfo-${env_name}.yaml"
+            echo "rendered ${env_name}: $(grep -c '^kind:' "rendered/podinfo-${env_name}.yaml") objects"
+          done
+
+      - name: Prod must be pinned by digest
+        run: |
+          set -euo pipefail
+          images="$(grep -E '^\s+image:' rendered/podinfo-prod.yaml)"
+          echo "${images}"
+          if echo "${images}" | grep -vqE '@sha256:[a-f0-9]{64}$'; then
+            echo "::error::prod overlay must reference images by @sha256 digest only"
+            exit 1
+          fi
+
+      - name: kubeconform
+        run: |
+          set -euo pipefail
+          kubeconform -strict -summary -output text \
+            -schema-location default \
+            -schema-location "https://raw.githubusercontent.com/datreeio/CRDs-catalog/${CRDS_CATALOG_REF}/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json" \
+            rendered/ gitops/argocd/ gitops/bootstrap/root-app.yaml
+
+  e2e:
+    name: End-to-end GitOps on kind
+    needs: [terraform, manifests]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Create kind cluster (3 nodes, 2 zones)
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          version: ${{ env.KIND_VERSION }}
+          node_image: ${{ env.KIND_NODE_IMAGE }}
+          kubectl_version: ${{ env.KUBECTL_VERSION }}
+          cluster_name: gitops-e2e
+          config: .github/kind-config.yaml
+          wait: 120s
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Install Argo CD (same chart + values as on EKS)
+        run: |
+          set -euo pipefail
+          helm upgrade --install argocd argo-cd \
+            --repo https://argoproj.github.io/argo-helm \
+            --version "${ARGOCD_CHART_VERSION}" \
+            --namespace argocd --create-namespace \
+            --values gitops/bootstrap/argocd-values.yaml \
+            --wait --timeout 10m
+          kubectl -n argocd get pods
+
+      - name: Apply AppProjects and the real podinfo ApplicationSet (pinned to this commit)
+        env:
+          REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}.git
+        run: |
+          set -euo pipefail
+          kubectl apply -f gitops/argocd/projects.yaml
+          # Same ApplicationSet as production; only the Git revision is
+          # switched from "main" to the commit under test.
+          yq '
+            .spec.generators[0].git.revision = strenv(REVISION) |
+            .spec.template.spec.source.targetRevision = strenv(REVISION) |
+            .spec.generators[0].git.repoURL = strenv(REPO_URL) |
+            .spec.template.spec.source.repoURL = strenv(REPO_URL)
+          ' gitops/argocd/workloads-podinfo.yaml | tee /dev/stderr | kubectl apply -f -
+
+      - name: Wait for Argo CD to generate and sync podinfo-qa and podinfo-prod
+        run: |
+          set -euo pipefail
+          for app in podinfo-qa podinfo-prod; do
+            for i in $(seq 1 60); do
+              kubectl -n argocd get application "${app}" >/dev/null 2>&1 && break
+              sleep 5
+            done
+          done
+          kubectl -n argocd wait application/podinfo-qa \
+            --for=jsonpath='{.status.health.status}'=Healthy --timeout=600s
+          kubectl -n argocd wait application/podinfo-qa \
+            --for=jsonpath='{.status.sync.status}'=Synced --timeout=120s
+          # prod includes an ALB Ingress that can never get an address on kind,
+          # so check Synced (not Healthy) for the Application itself.
+          kubectl -n argocd wait application/podinfo-prod \
+            --for=jsonpath='{.status.sync.status}'=Synced --timeout=600s
+          kubectl -n argocd get applications
+
+      - name: Smoke test QA (tag 6.15.0)
+        run: bash scripts/smoke-test.sh podinfo-qa 6.15.0 | tee qa-smoke.txt
+
+      - name: Smoke test PROD (pinned digest)
+        run: |
+          set -euo pipefail
+          LOCAL_PORT=19899 bash scripts/smoke-test.sh podinfo-prod | tee prod-smoke.txt
+          expected="$(yq '.images[0].digest' apps/podinfo/overlays/prod/kustomization.yaml)"
+          actual="$(sed -n 's/^digest=//p' prod-smoke.txt)"
+          echo "expected=${expected} actual=${actual}"
+          test "${expected}" = "${actual}"
+
+      - name: Verify prod hardening is live
+        run: |
+          set -euo pipefail
+          kubectl -n podinfo-prod get deploy,hpa,pdb,networkpolicy
+          kubectl -n podinfo-prod get pods -o wide
+          ready="$(kubectl -n podinfo-prod get deploy podinfo -o jsonpath='{.status.readyReplicas}')"
+          test "${ready}" -ge 3
+          # Pods landed on more than one node (topologySpreadConstraints).
+          nodes="$(kubectl -n podinfo-prod get pods -l app.kubernetes.io/name=podinfo -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' | sort -u | wc -l)"
+          test "${nodes}" -ge 2
+          # Pod Security Admission "restricted" is enforced on the namespace.
+          kubectl get ns podinfo-prod -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}' | grep -qx restricted
+
+      - name: Debug dump
+        if: failure()
+        run: bash scripts/debug-dump.sh

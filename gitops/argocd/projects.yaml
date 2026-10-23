@@ -1,0 +1,42 @@
+# Two AppProjects separate platform add-ons from business workloads:
+# workloads may only deploy namespaced objects into podinfo-* namespaces and
+# only from this repository.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: platform
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  description: Cluster add-ons managed by the platform team
+  sourceRepos:
+    - https://github.com/rsk071216-stack/aws-eks-gitops-platform.git
+    - https://aws.github.io/eks-charts
+    - https://kubernetes-sigs.github.io/metrics-server/
+  destinations:
+    - server: "*"
+      namespace: kube-system
+  clusterResourceWhitelist:
+    - group: "*"
+      kind: "*"
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: workloads
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  description: Application teams (qa and prod environments)
+  sourceRepos:
+    - https://github.com/rsk071216-stack/aws-eks-gitops-platform.git
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: "podinfo-*"
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+  orphanedResources:
+    warn: true

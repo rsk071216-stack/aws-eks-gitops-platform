@@ -1,0 +1,144 @@
+name: Promote QA digest to prod
+
+# Build once, promote by digest.
+#
+# 1. Deploy the QA overlay and run the QA smoke tests.
+# 2. Read the image digest the QA pods are *actually running*
+#    (status.containerStatuses[].imageID), not what the tag points to now.
+# 3. Open a pull request that pins the prod overlay to exactly that digest.
+#    Merging the PR is the production approval; Argo CD does the deploy.
+#
+# On this public demo the QA environment is an ephemeral kind cluster so the
+# workflow runs without AWS credentials. Against a real QA cluster, replace
+# the "Create kind cluster" + "Deploy QA" steps with an OIDC login and
+# `aws eks update-kubeconfig` - the smoke test and PR steps stay identical.
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: promote-prod
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  KUBECTL_VERSION: "v1.35.8"
+  KUSTOMIZE_VERSION: "v5.8.2"
+  KIND_VERSION: "v0.33.0"
+  KIND_NODE_IMAGE: "kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0"
+  IMAGE_NAME: ghcr.io/stefanprodan/podinfo
+
+jobs:
+  verify-qa:
+    name: Verify QA and capture digest
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      digest: ${{ steps.smoke.outputs.digest }}
+      version: ${{ steps.smoke.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Create kind cluster (stand-in for the QA cluster)
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          version: ${{ env.KIND_VERSION }}
+          node_image: ${{ env.KIND_NODE_IMAGE }}
+          kubectl_version: ${{ env.KUBECTL_VERSION }}
+          cluster_name: qa
+          wait: 120s
+
+      - name: Deploy QA overlay
+        run: kubectl apply -k apps/podinfo/overlays/qa
+
+      - name: QA smoke tests
+        id: smoke
+        run: |
+          set -euo pipefail
+          bash scripts/smoke-test.sh podinfo-qa | tee smoke.txt
+          cat smoke.txt >> "${GITHUB_OUTPUT}"
+
+      - name: Debug dump
+        if: failure()
+        run: bash scripts/debug-dump.sh
+
+  open-pr:
+    name: Open promotion pull request
+    needs: verify-qa
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+
+      - name: Install kustomize
+        run: |
+          set -euo pipefail
+          mkdir -p "${HOME}/bin"
+          curl -fsSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C "${HOME}/bin" kustomize
+          echo "${HOME}/bin" >> "${GITHUB_PATH}"
+
+      - name: Pin prod to the verified digest
+        id: pin
+        env:
+          DIGEST: ${{ needs.verify-qa.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "${DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "::error::invalid digest '${DIGEST}'"; exit 1; }
+          current="$(grep -oE 'sha256:[a-f0-9]{64}' apps/podinfo/overlays/prod/kustomization.yaml || true)"
+          echo "current prod digest: ${current:-<none>}"
+          echo "verified qa digest:  ${DIGEST}"
+          (cd apps/podinfo/overlays/prod && kustomize edit set image "${IMAGE_NAME}@${DIGEST}")
+          git diff
+          echo "previous=${current}" >> "${GITHUB_OUTPUT}"
+          echo "short=${DIGEST:7:12}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create or update pull request
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          branch: promote/podinfo-prod
+          delete-branch: true
+          commit-message: |
+            Promote podinfo ${{ needs.verify-qa.outputs.version }} to prod by digest
+
+            Pins prod to ${{ env.IMAGE_NAME }}@${{ needs.verify-qa.outputs.digest }},
+            the digest verified by the QA smoke tests in run ${{ github.run_id }}.
+          title: "Promote podinfo ${{ needs.verify-qa.outputs.version }} to prod (${{ steps.pin.outputs.short }})"
+          labels: promotion
+          body: |
+            ## Promotion: QA -> prod
+
+            | | |
+            |---|---|
+            | Version | `${{ needs.verify-qa.outputs.version }}` |
+            | Verified digest | `${{ needs.verify-qa.outputs.digest }}` |
+            | Previous prod digest | `${{ steps.pin.outputs.previous }}` |
+            | Evidence | [QA smoke test run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
+
+            The digest above is read from the running QA pods (`status.containerStatuses[].imageID`),
+            so prod will run **byte-for-byte the same image** that passed QA - even if the tag is
+            re-pushed later.
+
+            **Merging this PR is the production approval.** Argo CD syncs `podinfo-prod` within a minute.
+
+            **Rollback:** revert this PR. The previous digest is shown above.
+
+            _Opened automatically by the `promote` workflow._

@@ -1,0 +1,25 @@
+# Copy to terraform.tfvars (git-ignored) and adjust.
+region      = "eu-west-1"
+project     = "eks-gitops"
+environment = "platform"
+
+# Cost vs. availability: one NAT gateway (default) or one per AZ.
+single_nat_gateway = true
+
+# Lock the public API endpoint down to your office / VPN egress IPs.
+endpoint_public_access_cidrs = ["203.0.113.10/32"]
+
+node_instance_types = ["t3.medium", "t3a.medium"]
+node_capacity_type  = "SPOT"
+node_group_size = {
+  min     = 2
+  max     = 5
+  desired = 3
+}
+
+cluster_admin_principal_arns = [
+  "arn:aws:iam::123456789012:role/AWSReservedSSO_AdministratorAccess_0123456789abcdef",
+]
+qa_editor_principal_arns = [
+  "arn:aws:iam::123456789012:role/AWSReservedSSO_Developer_0123456789abcdef",
+]

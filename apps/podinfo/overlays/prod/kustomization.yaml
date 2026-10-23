@@ -1,0 +1,31 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# PROD is pinned by DIGEST, never by tag. The image digest below is only ever
+# changed by a pull request from the "promote" workflow, after the very same
+# digest passed the QA smoke tests.
+namespace: podinfo-prod
+
+resources:
+  - ../../base
+  - hpa.yaml
+  - pdb.yaml
+  - networkpolicy.yaml
+
+components:
+  - ../../components/alb-ingress
+
+labels:
+  - pairs:
+      app.kubernetes.io/environment: prod
+
+replicas:
+  - name: podinfo
+    count: 3
+
+patches:
+  - path: deployment-patch.yaml
+
+images:
+  - name: ghcr.io/stefanprodan/podinfo
+    digest: sha256:f9537f729129d339aaef049b76ab2cd4ff06a424f99e5f6a5923c10621018fb1

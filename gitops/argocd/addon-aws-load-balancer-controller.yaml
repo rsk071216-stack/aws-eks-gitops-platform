@@ -1,0 +1,55 @@
+# GitOps bridge pattern: Terraform owns AWS facts (cluster name, region, VPC
+# ID). scripts/bootstrap-argocd.sh writes them as annotations on the Argo CD
+# cluster Secret; this ApplicationSet templates them into the Helm values.
+# Clusters opt in with the label enable_aws_load_balancer_controller=true,
+# so a kind cluster or a cluster without the IAM role never gets it.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: aws-load-balancer-controller
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            enable_aws_load_balancer_controller: "true"
+  template:
+    metadata:
+      name: "aws-load-balancer-controller-{{ .name }}"
+    spec:
+      project: platform
+      source:
+        repoURL: https://aws.github.io/eks-charts
+        chart: aws-load-balancer-controller
+        targetRevision: 3.5.0
+        helm:
+          releaseName: aws-load-balancer-controller
+          valuesObject:
+            clusterName: "{{ index .metadata.annotations \"aws_cluster_name\" }}"
+            region: "{{ index .metadata.annotations \"aws_region\" }}"
+            vpcId: "{{ index .metadata.annotations \"aws_vpc_id\" }}"
+            replicaCount: 2
+            serviceAccount:
+              create: true
+              # Matches the Pod Identity association in terraform/pod-identity.tf
+              name: aws-load-balancer-controller
+            podDisruptionBudget:
+              maxUnavailable: 1
+      destination:
+        server: "{{ .server }}"
+        namespace: kube-system
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        retry:
+          limit: 5
+          backoff:
+            duration: 10s
+            factor: 2
+            maxDuration: 3m

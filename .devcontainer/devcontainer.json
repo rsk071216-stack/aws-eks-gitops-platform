@@ -1,0 +1,17 @@
+{
+  "name": "aws-eks-gitops-platform",
+  "image": "mcr.microsoft.com/devcontainers/base:3.0.9-noble",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2.16.1": {}
+  },
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "8gb"
+  },
+  "postCreateCommand": "bash scripts/install-tools.sh",
+  "forwardPorts": [8080, 9898],
+  "portsAttributes": {
+    "8080": { "label": "Argo CD UI" },
+    "9898": { "label": "podinfo" }
+  }
+}

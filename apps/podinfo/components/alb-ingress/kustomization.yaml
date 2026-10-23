@@ -1,0 +1,7 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# Opt-in component: exposes podinfo through an internet-facing ALB managed by
+# the AWS Load Balancer Controller. Only included by overlays that run on EKS.
+resources:
+  - ingress.yaml

@@ -1,0 +1,39 @@
+# Values for the argo-cd Helm chart (argo/argo-cd). Used by
+# scripts/bootstrap-argocd.sh on EKS and by the CI end-to-end job on kind,
+# so CI exercises the same installation path as a real cluster.
+global:
+  domain: argocd.local
+
+configs:
+  params:
+    # TLS is terminated at the load balancer (or kubectl port-forward).
+    server.insecure: true
+  cm:
+    # Poll Git every 60s (default 180s). Use a GitHub webhook in production.
+    timeout.reconciliation: 60s
+    # No interactive shell into pods from the Argo CD UI.
+    exec.enabled: false
+
+dex:
+  enabled: false
+
+notifications:
+  enabled: false
+
+controller:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+repoServer:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+
+server:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi

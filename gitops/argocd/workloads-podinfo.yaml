@@ -1,0 +1,54 @@
+# One Application per environment, generated from the directory layout:
+# every folder under apps/podinfo/overlays/ becomes podinfo-<folder>.
+# Adding an environment = adding a folder. No Argo CD YAML to copy/paste.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: podinfo
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - git:
+        repoURL: https://github.com/rsk071216-stack/aws-eks-gitops-platform.git
+        revision: main
+        directories:
+          - path: apps/podinfo/overlays/*
+  template:
+    metadata:
+      name: "podinfo-{{ .path.basename }}"
+      labels:
+        app.kubernetes.io/name: podinfo
+        environment: "{{ .path.basename }}"
+    spec:
+      project: workloads
+      source:
+        repoURL: https://github.com/rsk071216-stack/aws-eks-gitops-platform.git
+        targetRevision: main
+        path: "{{ .path.path }}"
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "podinfo-{{ .path.basename }}"
+      # The HPA owns spec.replicas in prod; do not let Argo CD reset it.
+      ignoreDifferences:
+        - group: apps
+          kind: Deployment
+          jsonPointers:
+            - /spec/replicas
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - ServerSideApply=true
+          - RespectIgnoreDifferences=true
+          - PruneLast=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 10s
+            factor: 2
+            maxDuration: 3m

@@ -1,0 +1,133 @@
+name: Terraform (AWS)
+
+# Manual plan / apply / destroy against a real AWS account.
+#  - Authentication: GitHub OIDC -> IAM role (terraform/bootstrap). No access keys.
+#  - "aws-plan" environment: plan only, no reviewers.
+#  - "aws-platform" environment: apply/destroy, protected by required reviewers.
+#  - apply runs the exact plan file that was reviewed.
+#
+# Required configuration (Settings -> Environments, on both environments):
+#   secret AWS_TERRAFORM_ROLE_ARN   output github_terraform_role_arn of terraform/bootstrap
+#   var    TF_STATE_BUCKET          output state_bucket of terraform/bootstrap
+#   var    AWS_REGION               e.g. eu-west-1
+#   var    TF_VAR_CLUSTER_ADMINS    optional, JSON list of IAM ARNs, e.g. ["arn:aws:iam::...:role/Admin"]
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Terraform action
+        type: choice
+        options: [plan, apply, destroy]
+        default: plan
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: terraform-aws
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+    working-directory: terraform
+
+env:
+  TERRAFORM_VERSION: "1.16.5"
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  plan:
+    name: Plan (${{ inputs.action }})
+    runs-on: ubuntu-24.04
+    environment: aws-plan
+    timeout-minutes: 30
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TF_VAR_region: ${{ vars.AWS_REGION }}
+      TF_VAR_cluster_admin_principal_arns: ${{ vars.TF_VAR_CLUSTER_ADMINS || '[]' }}
+    outputs:
+      has_changes: ${{ steps.plan.outputs.has_changes }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
+          role-session-name: gha-terraform-plan-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: terraform init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=platform/terraform.tfstate" \
+            -backend-config="region=${{ vars.AWS_REGION }}"
+
+      - name: terraform plan
+        id: plan
+        run: |
+          set +e
+          terraform plan -detailed-exitcode -out=tfplan ${{ inputs.action == 'destroy' && '-destroy' || '' }}
+          rc=$?
+          set -e
+          [[ ${rc} -eq 1 ]] && exit 1
+          echo "has_changes=$([[ ${rc} -eq 2 ]] && echo true || echo false)" >> "${GITHUB_OUTPUT}"
+          {
+            echo "### Terraform plan (${{ inputs.action }})"
+            echo '```'
+            terraform show -no-color tfplan | tail -n 200
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tfplan
+          path: terraform/tfplan
+          retention-days: 1
+
+  apply:
+    name: ${{ inputs.action }} (requires approval)
+    needs: plan
+    if: inputs.action != 'plan' && needs.plan.outputs.has_changes == 'true'
+    runs-on: ubuntu-24.04
+    environment: aws-platform
+    timeout-minutes: 60
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
+          role-session-name: gha-terraform-apply-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: tfplan
+          path: terraform
+
+      - name: terraform init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=platform/terraform.tfstate" \
+            -backend-config="region=${{ vars.AWS_REGION }}"
+
+      - name: terraform apply (reviewed plan)
+        run: terraform apply tfplan

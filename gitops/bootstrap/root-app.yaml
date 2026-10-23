@@ -1,0 +1,22 @@
+# App of apps. The only object applied by hand (by scripts/bootstrap-argocd.sh);
+# everything else is reconciled by Argo CD from gitops/argocd/.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/rsk071216-stack/aws-eks-gitops-platform.git
+    targetRevision: main
+    path: gitops/argocd
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

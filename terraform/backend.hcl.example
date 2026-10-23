@@ -1,0 +1,8 @@
+# Copy to backend.hcl (git-ignored) and run:
+#   terraform init -backend-config=backend.hcl
+#
+# The bucket is created by ../terraform/bootstrap. Locking uses S3 native
+# lock files (use_lockfile = true in versions.tf), so no DynamoDB table.
+bucket = "eks-gitops-tfstate-123456789012-eu-west-1"
+key    = "platform/terraform.tfstate"
+region = "eu-west-1"
