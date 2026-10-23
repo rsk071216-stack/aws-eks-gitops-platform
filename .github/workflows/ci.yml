@@ -81,7 +81,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Checkov
-        uses: bridgecrewio/checkov-action@7b1bd992e2c40a3404e3511944aeb8d014703d9a # v12.3129.0
+        uses: bridgecrewio/checkov-action@6f26dc90000b74feb589a906cdfae540f5119895 # v12.3134.0
         with:
           directory: .
           framework: terraform,kubernetes,github_actions
@@ -144,7 +144,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Create kind cluster (3 nodes, 2 zones)
-        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
         with:
           version: ${{ env.KIND_VERSION }}
           node_image: ${{ env.KIND_NODE_IMAGE }}
