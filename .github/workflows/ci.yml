@@ -157,6 +157,9 @@ jobs:
         with:
           version: ${{ env.HELM_VERSION }}
 
+      # CI only: anonymous pulls from ECR Public hit HTTP 429 on shared GitHub
+      # runner IPs, so redis (same tag) comes from the mirror.gcr.io Docker Hub
+      # mirror. On EKS the chart default registry is used.
       - name: Install Argo CD (same chart + values as on EKS)
         run: |
           set -euo pipefail
@@ -165,6 +168,7 @@ jobs:
             --version "${ARGOCD_CHART_VERSION}" \
             --namespace argocd --create-namespace \
             --values gitops/bootstrap/argocd-values.yaml \
+            --set redis.image.repository=mirror.gcr.io/library/redis \
             --wait --timeout 10m
           kubectl -n argocd get pods
 
