@@ -7,25 +7,25 @@ kind: Kustomization
 namespace: podinfo-prod
 
 resources:
-  - ../../base
-  - hpa.yaml
-  - pdb.yaml
-  - networkpolicy.yaml
+- ../../base
+- hpa.yaml
+- pdb.yaml
+- networkpolicy.yaml
 
 components:
-  - ../../components/alb-ingress
+- ../../components/alb-ingress
 
 labels:
-  - pairs:
-      app.kubernetes.io/environment: prod
+- pairs:
+    app.kubernetes.io/environment: prod
 
 replicas:
-  - name: podinfo
-    count: 3
+- count: 3
+  name: podinfo
 
 patches:
-  - path: deployment-patch.yaml
+- path: deployment-patch.yaml
 
 images:
-  - name: ghcr.io/stefanprodan/podinfo
-    digest: sha256:f9537f729129d339aaef049b76ab2cd4ff06a424f99e5f6a5923c10621018fb1
+- digest: sha256:ec73780a8425f59ea49f5bc8cdff0d598805a224fbaa1f86c67a244f250fa9da
+  name: ghcr.io/stefanprodan/podinfo
