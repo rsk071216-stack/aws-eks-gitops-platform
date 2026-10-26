@@ -9,7 +9,7 @@
 # AWS Load Balancer Controller -> manages ALBs/NLBs for Ingress/Service objects.
 module "aws_lb_controller_pod_identity" {
   source  = "terraform-aws-modules/eks-pod-identity/aws"
-  version = "2.9.0"
+  version = "2.10.0"
 
   name = "${local.name}-aws-lbc"
 
@@ -36,7 +36,7 @@ module "aws_lb_controller_pod_identity" {
 # no cross-environment secret access.
 module "podinfo_pod_identity" {
   source  = "terraform-aws-modules/eks-pod-identity/aws"
-  version = "2.9.0"
+  version = "2.10.0"
 
   name = "${local.name}-podinfo"
 
