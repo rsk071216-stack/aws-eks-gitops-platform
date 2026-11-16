@@ -53,7 +53,7 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Create kind cluster (stand-in for the QA cluster)
-        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376 # v1.15.2
         with:
           version: ${{ env.KIND_VERSION }}
           node_image: ${{ env.KIND_NODE_IMAGE }}
@@ -112,7 +112,7 @@ jobs:
           echo "short=${DIGEST:7:12}" >> "${GITHUB_OUTPUT}"
 
       - name: Create or update pull request
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        uses: peter-evans/create-pull-request@15733dbdfeedb4f7fdb73d13c6f5ac83b710fab8 # v8.1.2
         with:
           branch: promote/podinfo-prod
           delete-branch: true
